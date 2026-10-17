@@ -3002,33 +3002,27 @@ namespace TorannMagic
 
         public static void Targeter_Casting_Postfix(Targeter __instance)
         {
-            if (__instance.targetingSource != null && __instance.targetingSource.CasterIsPawn)
-            {
-                Pawn caster = __instance.targetingSource.CasterPawn;
-                if (caster != null)
-                {
-                    IntVec3 targ = UI.MouseMapPosition().ToIntVec3();
-                    if (targ.IsValid && __instance.targetingSource.GetVerb != null && __instance.targetingSource.GetVerb.EquipmentSource == null && __instance.targetingSource.GetVerb.loadID == null) // && __instance.targetingSource.GetVerb.EquipmentSource == null)
-                    {
+            var source = __instance?.targetingSource;
+            if (source == null || !source.CasterIsPawn) return;
+            var caster = source.CasterPawn;
+            var verb = source.GetVerb;
+            var props = verb?.verbProps;
+            if (caster == null || !caster.Spawned || props == null) return;
+            var map = caster.Map;
+            // OnGUI may run after a caster despawns or the viewed map changes.
+            // The targeting source and its verb must refer to the same live map.
+            if (map == null || map != Find.CurrentMap || verb.caster == null ||
+                !verb.caster.Spawned || verb.caster.Map != map ||
+                verb.EquipmentSource != null || verb.loadID != null) return;
 
-                        if ((caster.Position - targ).LengthHorizontal > __instance.targetingSource.GetVerb.verbProps.range)
-                        {
-                            Texture2D icon = TexCommand.CannotShoot; // TM_RenderQueue.losIcon;
-                            GenUI.DrawMouseAttachment(icon);
-                        }
-                        if (__instance.targetingSource.GetVerb.verbProps.requireLineOfSight && !__instance.targetingSource.GetVerb.TryFindShootLineFromTo(caster.Position, targ, out ShootLine resultingLine))
-                        {
-                            Texture2D icon = TM_RenderQueue.losIcon;
-                            GenUI.DrawMouseAttachment(icon);
-                        }
-                        if (__instance.targetingSource.GetVerb.GetType() == typeof(Verb_LightSkip) && targ.InBoundsWithNullCheck(caster.Map) && targ.Roofed(caster.Map))
-                        {
-                            Texture2D icon = TexCommand.CannotShoot;
-                            GenUI.DrawMouseAttachment(icon);
-                        }
-                    }
-                }
-            }
+            IntVec3 targ = UI.MouseMapPosition().ToIntVec3();
+            if (!caster.Position.InBounds(map) || !targ.InBounds(map)) return;
+            if ((caster.Position - targ).LengthHorizontal > props.range)
+                GenUI.DrawMouseAttachment(TexCommand.CannotShoot);
+            if (props.requireLineOfSight && !verb.TryFindShootLineFromTo(caster.Position, targ, out ShootLine resultingLine))
+                GenUI.DrawMouseAttachment(TM_RenderQueue.losIcon);
+            if (verb is Verb_LightSkip && targ.Roofed(map))
+                GenUI.DrawMouseAttachment(TexCommand.CannotShoot);
         }
 
         //public static void DaysWorthOfFoodCalc_Undead_Postfix(List<Pawn> pawns, List<ThingDefCount> extraFood, int tile, IgnorePawnsInventoryMode ignoreInventory, Faction faction, ref float __result, WorldPath path = null, float nextTileCostLeft = 0f, int caravanTicksPerMove = 3300, bool assumeCaravanMoving = true)
@@ -3122,32 +3116,28 @@ namespace TorannMagic
         [HarmonyPriority(2000)]
         public static bool RimmuNation_CHCFCIR_Patch(Verb __instance, IntVec3 sourceSq, IntVec3 targetLoc, bool includeCorners, ref bool __result)
         {
-            if (__instance != null && (__instance.verbProps.verbClass.ToString().Contains("AbilityUser") || __instance.verbProps.verbClass.ToString().Contains("TorannMagic")))
+            var verbProps = __instance?.verbProps;
+            if (verbProps == null)
             {
-                __result = true;
-                VerbProperties verbProps = Traverse.Create(root: __instance).Field(name: "verbProps").GetValue<VerbProperties>();
-                Thing caster = Traverse.Create(root: __instance).Field(name: "caster").GetValue<Thing>();
-                if (verbProps.mustCastOnOpenGround && (!targetLoc.Standable(caster.Map) || caster.Map.thingGrid.CellContains(targetLoc, ThingCategory.Pawn)))
-                {
-                    __result = false;
-                }
-                if (verbProps.requireLineOfSight)
-                {
-                    if (!includeCorners)
-                    {
-                        if (!GenSight.LineOfSight(sourceSq, targetLoc, caster.Map, skipFirstCell: true))
-                        {
-                            __result = false;
-                        }
-                    }
-                    else if (!GenSight.LineOfSightToEdges(sourceSq, targetLoc, caster.Map, skipFirstCell: true))
-                    {
-                        __result = false;
-                    }
-                }
+                __result = false;
                 return false;
             }
-            return true;
+            string verbClass = (verbProps.verbClass ?? __instance.GetType()).FullName;
+            if (verbClass == null || (!verbClass.Contains("AbilityUser") && !verbClass.Contains("TorannMagic")))
+                return true;
+
+            __result = false;
+            var caster = __instance.caster;
+            var map = caster?.Map;
+            if (caster == null || !caster.Spawned || map == null ||
+                !sourceSq.InBounds(map) || !targetLoc.InBounds(map)) return false;
+            if (verbProps.mustCastOnOpenGround &&
+                (!targetLoc.Standable(map) || map.thingGrid.CellContains(targetLoc, ThingCategory.Pawn))) return false;
+
+            __result = !verbProps.requireLineOfSight || (includeCorners
+                ? GenSight.LineOfSightToEdges(sourceSq, targetLoc, map, skipFirstCell: true)
+                : GenSight.LineOfSight(sourceSq, targetLoc, map, skipFirstCell: true));
+            return false;
         }
 
         public static bool Pawn_PathFollower_Pathfinder_Prefix(Pawn pawn, IntVec3 c, ref float __result)
@@ -5948,10 +5938,21 @@ namespace TorannMagic
         {
             public static bool Prefix(Verb __instance, IntVec3 root, LocalTargetInfo targ, out ShootLine resultingLine, ref bool __result)
             {
+                resultingLine = default(ShootLine);
+                var caster = __instance?.caster;
+                var props = __instance?.verbProps;
+                var map = caster?.Map;
+                if (props == null || caster == null || !caster.Spawned || map == null ||
+                    !root.InBounds(map) || !targ.IsValid || !targ.Cell.InBounds(map))
+                {
+                    __result = false;
+                    return false;
+                }
+                string verbClass = (props.verbClass ?? __instance.GetType()).FullName;
                 if (__instance.verbProps.IsMeleeAttack)
                 {
                     resultingLine = new ShootLine(root, targ.Cell);
-                    __result = ReachabilityImmediate.CanReachImmediate(root, targ, __instance.caster.Map, PathEndMode.Touch, null);
+                    __result = ReachabilityImmediate.CanReachImmediate(root, targ, map, PathEndMode.Touch, null);
                     return false;
                 }
                 if (__instance.verbProps.range == 0 && __instance.CasterPawn != null && !__instance.CasterPawn.IsColonist) // allows ai to autocast on themselves
@@ -5961,33 +5962,33 @@ namespace TorannMagic
                     return false;
                 }
                 
-                if (__instance.verbProps.verbClass.ToString() == "TorannMagic.Verb_Blink" ||
-                    __instance.verbProps.verbClass.ToString() == "TorannMagic.Verb_Summon" ||
-                    __instance.verbProps.verbClass.ToString() == "TorannMagic.Verb_PhaseStrike" ||
-                    __instance.verbProps.verbClass.ToString() == "TorannMagic.Verb_BLOS" ||
-                    __instance.verbProps.verbClass.ToString() == "TorannMagic.Verb_LightSkip" ||                   
-                    __instance.verbProps.verbClass.ToString() == "TorannMagic.Verb_SootheAnimal" ||
-                    __instance.verbProps.verbClass.ToString() == "TorannMagic.Effect_EyeOfTheStorm" ||
-                    __instance.verbProps.verbClass.ToString() == "TorannMagic.Effect_Flight" ||
-                    __instance.verbProps.verbClass.ToString() == "TorannMagic.Verb_Regenerate" ||
-                    __instance.verbProps.verbClass.ToString() == "TorannMagic.Verb_SpellMending" ||
-                    __instance.verbProps.verbClass.ToString() == "TorannMagic.Verb_CauterizeWound" ||
-                    __instance.verbProps.verbClass.ToString() == "TorannMagic.Verb_Transpose" ||
-                    __instance.verbProps.verbClass.ToString() == "TorannMagic.Verb_Disguise" ||
-                    __instance.verbProps.verbClass.ToString() == "TorannMagic.Verb_SoulBond" ||
-                    __instance.verbProps.verbClass.ToString() == "TorannMagic.Verb_SummonDemon" ||
-                    __instance.verbProps.verbClass.ToString() == "TorannMagic.Verb_EarthSprites" ||
-                    __instance.verbProps.verbClass.ToString() == "TorannMagic.Verb_Overdrive" ||
-                    __instance.verbProps.verbClass.ToString() == "TorannMagic.Verb_BlankMind" ||
-                    __instance.verbProps.verbClass.ToString() == "TorannMagic.Verb_MechaniteReprogramming" ||
-                    __instance.verbProps.verbClass.ToString() == "TorannMagic.Verb_ShadowWalk" ||
-                    __instance.verbProps.verbClass.ToString() == "TorannMagic.Verb_SoL_CreateLight" ||
-                    __instance.verbProps.verbClass.ToString() == "TorannMagic.Verb_Enrage" ||
-                    __instance.verbProps.verbClass.ToString() == "TorannMagic.Verb_Hex" ||
-                    __instance.verbProps.verbClass.ToString() == "TorannMagic.Verb_Discord" ||
-                    __instance.verbProps.verbClass.ToString() == "TorannMagic.Verb_AdvancedHeal" ||
-                    __instance.verbProps.verbClass.ToString() == "TorannMagic.Verb_ControlSpiritStorm" ||
-                    __instance.verbProps.verbClass.ToString() == "TorannMagic.Verb_Scorn" ||
+                if (verbClass == "TorannMagic.Verb_Blink" ||
+                    verbClass == "TorannMagic.Verb_Summon" ||
+                    verbClass == "TorannMagic.Verb_PhaseStrike" ||
+                    verbClass == "TorannMagic.Verb_BLOS" ||
+                    verbClass == "TorannMagic.Verb_LightSkip" ||                   
+                    verbClass == "TorannMagic.Verb_SootheAnimal" ||
+                    verbClass == "TorannMagic.Effect_EyeOfTheStorm" ||
+                    verbClass == "TorannMagic.Effect_Flight" ||
+                    verbClass == "TorannMagic.Verb_Regenerate" ||
+                    verbClass == "TorannMagic.Verb_SpellMending" ||
+                    verbClass == "TorannMagic.Verb_CauterizeWound" ||
+                    verbClass == "TorannMagic.Verb_Transpose" ||
+                    verbClass == "TorannMagic.Verb_Disguise" ||
+                    verbClass == "TorannMagic.Verb_SoulBond" ||
+                    verbClass == "TorannMagic.Verb_SummonDemon" ||
+                    verbClass == "TorannMagic.Verb_EarthSprites" ||
+                    verbClass == "TorannMagic.Verb_Overdrive" ||
+                    verbClass == "TorannMagic.Verb_BlankMind" ||
+                    verbClass == "TorannMagic.Verb_MechaniteReprogramming" ||
+                    verbClass == "TorannMagic.Verb_ShadowWalk" ||
+                    verbClass == "TorannMagic.Verb_SoL_CreateLight" ||
+                    verbClass == "TorannMagic.Verb_Enrage" ||
+                    verbClass == "TorannMagic.Verb_Hex" ||
+                    verbClass == "TorannMagic.Verb_Discord" ||
+                    verbClass == "TorannMagic.Verb_AdvancedHeal" ||
+                    verbClass == "TorannMagic.Verb_ControlSpiritStorm" ||
+                    verbClass == "TorannMagic.Verb_Scorn" ||
                     !__instance.verbProps.requireLineOfSight)
                 {
                     //Ignores line of sight
@@ -8399,4 +8400,5 @@ namespace TorannMagic
 
     }
 }
+
 
