@@ -1,4 +1,4 @@
-﻿using HarmonyLib;
+using HarmonyLib;
 using RimWorld;
 using AbilityUser;
 using RimWorld.Planet;
@@ -253,6 +253,15 @@ namespace TorannMagic
                 catch (TypeLoadException) { }
             }
             #endregion Children
+
+            ApplyAttributePatches(harmonyInstance);
+        }
+
+        private static void ApplyAttributePatches(Harmony harmony)
+        {
+            // HugsLib previously registered these through HugsMod. The base mod
+            // must now register them itself, including generated magic/might traits.
+            harmony.PatchAll(typeof(TorannMagicMod).Assembly);
         }
 
         //public static bool PawnAbility_GetJob_Prefix(PawnAbility __instance, AbilityContext context, LocalTargetInfo target, ref Job __result)
@@ -934,7 +943,7 @@ namespace TorannMagic
         [HarmonyPatch(typeof(ThoughtWorker_Precept_HasAutomatedTurrets), "ResetStaticData", null)]
         public class NoSummonedTurretsThought_Patch
         {
-            private static void Postfix(ThoughtWorker_Precept_HasAutomatedTurrets __instance, ref List<ThingDef> ___automatedTurretDefs)
+            private static void Postfix(ref List<ThingDef> ___automatedTurretDefs)
             {
                 List<ThingDef> tmpList = new List<ThingDef>();
                 tmpList.Clear();
@@ -977,23 +986,31 @@ namespace TorannMagic
         [HarmonyPatch(typeof(ThoughtUtility), "CanGetThought", null)]
         public class ThoughtSuppression_Patch
         {
+            // Integrated from ZalARoM. This replaces its separate postfix/unpatch watcher.
+            [HarmonyPriority(Priority.High)]
             private static void Postfix(Pawn pawn, ThoughtDef def, ref bool __result)
             {
-                if (__result && pawn != null && pawn.health != null && pawn.health.hediffSet != null && pawn.health.hediffSet.HasHediff(TorannMagicDefOf.TM_EmotionSuppressionHD))
-                {
-                    Hediff hd = pawn.health.hediffSet.GetFirstHediffOfDef(TorannMagicDefOf.TM_EmotionSuppressionHD);
-                    if (hd != null && def.stages != null && def.stages.FirstOrDefault() != null && def.stages.FirstOrDefault().baseMoodEffect != 0)
-                    {
-                        if(Rand.Chance(Mathf.Clamp01(hd.Severity - .7f)) && def.stages.FirstOrDefault().baseMoodEffect > 0)
-                        {
-                            //can gain positive thoughts
-                        }
-                        else
-                        {
-                            __result = false;
-                        }
-                    }
-                }
+                if (!__result)
+                    return;
+
+                var set = pawn?.health?.hediffSet;
+                if (set == null)
+                    return;
+
+                var hediff = set.GetFirstHediffOfDef(TorannMagicDefOf.TM_EmotionSuppressionHD);
+                if (hediff == null)
+                    return;
+
+                var stages = def?.stages;
+                if (stages == null || stages.Count == 0 || stages[0] == null)
+                    return;
+
+                float moodEffect = stages[0].baseMoodEffect;
+                if (moodEffect == 0f)
+                    return;
+
+                if (moodEffect < 0f || !Rand.Chance(Mathf.Clamp01(hediff.Severity - .7f)))
+                    __result = false;
             }
         }
 
@@ -2241,7 +2258,7 @@ namespace TorannMagic
         [HarmonyPatch(typeof(WeatherWorker), "WeatherTick", null)]
         public class WeatherWorker_Patch
         {
-            public static void Postfix(WeatherManager __instance, Map map)
+            public static void Postfix(Map map)
             {
                 if (map.weatherManager.curWeather == TorannMagicDefOf.TM_HealingRainWD)
                 {
@@ -2537,7 +2554,7 @@ namespace TorannMagic
         public static class CostToMove_Caravan_Patch
         {
             [HarmonyPostfix]
-            public static void CostToMove_Caravan_Postfix(Caravan_PathFollower __instance, Caravan caravan, PlanetLayer start, PlanetTile end, ref int __result, int? ticksAbs = default(int?))
+            public static void CostToMove_Caravan_Postfix(Caravan caravan, PlanetTile end, ref int __result, int? ticksAbs = default(int?))
             {
                 if (caravan != null)
                 {
@@ -8382,3 +8399,4 @@ namespace TorannMagic
 
     }
 }
+
